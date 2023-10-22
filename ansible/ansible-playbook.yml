@@ -1,0 +1,176 @@
+---
+- name: Installing and configuring MediaWiki on the localhost
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Installing pip3
+      package:
+        name: python3-pip
+        state: present
+      become: yes
+
+    - name: Installing pexpect Python library
+      pip:
+        name: pexpect
+      become: yes
+
+    - name: Installing firewalld
+      yum:
+        name: firewalld
+        state: installed
+      become: yes
+
+    - name: Start firewalld service
+      service:
+        name: firewalld
+        state: started
+      become: yes
+
+    - name: Installing wget
+      yum:
+        name: wget
+      become: yes
+
+    - name: Installing Apache and PHP
+      package:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - httpd
+        - php
+        - mariadb-server
+      become: yes
+
+    - name: Reset PHP modules
+      command: "dnf module reset php"
+      become: yes
+
+    - name: Installing PHP packages
+      package:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - php-mysqlnd
+        - php-gd
+        - php-xml
+        - php-mbstring
+        - php-json
+        - mod_ssl
+        - php-intl
+        - php-apcu
+      become: yes
+
+- name: Start MariaDB
+  hosts: localhost
+  become: yes
+  tasks:
+    - name: Start MariaDB
+      service:
+        name: mariadb
+        state: started
+
+- name: Secure MySQL/MariaDB Installation
+  hosts: localhost
+  become: yes
+  tasks:
+    - name: Run mysql_secure_installation and provide responses
+      command: mysql_secure_installation < response.yaml
+      args:
+        creates: response.yaml
+
+  tasks:
+    - name: Execute MySQL setup script
+      shell: DBbash.sh
+
+  tasks:
+    - name: Enable MariaDB service
+      service:
+        name: mariadb
+        enabled: yes
+      become: yes
+
+    - name: Start MariaDB service
+      service:
+        name: mariadb
+        state: started
+      become: yes
+
+    - name: Enable HTTPd service
+      service:
+        name: httpd
+        enabled: yes
+      become: yes
+
+    - name: Start HTTPd service
+      service:
+        name: httpd
+        state: started
+      become: yes
+
+    - name: Download MediaWiki tarball
+      get_url:
+        url: https://releases.wikimedia.org/mediawiki/1.40/mediawiki-1.40.1.tar.gz
+        dest: /home/ec2-user/mediawiki-1.40.1.tar.gz
+      become: yes
+
+    - name: Download MediaWiki tarball signature
+      get_url:
+        url: https://releases.wikimedia.org/mediawiki/1.40/mediawiki-1.40.1.tar.gz.sig
+        dest: /home/ec2-user/mediawiki-1.40.1.tar.gz.sig
+      become: yes
+
+#    - name: Verify MediaWiki tarball signature
+#      command: gpg --verify mediawiki-1.40.1.tar.gz.sig mediawiki-1.40.1.tar.gz
+#      args:
+#        chdir: /home/ec2-user
+#      become: yes
+
+    - name: Extract and symlink MediaWiki
+      ansible.builtin.shell: |
+        tar -zxf /home/ec2-user/mediawiki-1.40.1.tar.gz
+        ln -s mediawiki-1.40.1/ mediawiki
+      args:
+        chdir: /var/www
+        creates: /var/www/mediawiki
+      become: yes
+      ignore_errors: yes
+
+    - name: Modify httpd.conf
+      ansible.builtin.lineinfile:
+        path: /etc/httpd/conf/httpd.conf
+        backrefs: yes
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^DocumentRoot "/var/www/html"', line: 'DocumentRoot "/var/www"' }
+        - { regexp: '<Directory "/var/www/html">', line: '<Directory "/var/www">' }
+        - { regexp: 'DirectoryIndex index.html', line: 'DirectoryIndex index.html index.html.var index.php' }
+      become: yes
+
+    - name: Changing owner of mediawiki
+      command: "chown -R apache:apache /var/www/mediawiki-1.40.1"
+      become: yes
+
+
+    - name: Restart HTTPd service
+      service:
+        name: httpd
+        state: restarted
+      become: yes
+
+    - name: Configure firewall rules for HTTP and HTTPS
+      command: "firewall-cmd --permanent --zone=public --add-service={{ item }}"
+      with_items:
+        - http
+        - https
+      become: yes
+
+    - name: Restart firewalld
+      systemd:
+        name: firewalld
+        state: restarted
+      become: yes
+
+    - name: Restore SELinux contexts for /var/www/mediawiki-1.40.1
+      command: "restorecon -FR /var/www/mediawiki-1.40.1/"
+      become: yes
